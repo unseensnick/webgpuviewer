@@ -5,6 +5,7 @@ import android.graphics.RectF
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.spring
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.util.fastCoerceIn
 import androidx.webgpu.GPUCommandEncoder
 import androidx.webgpu.GPUTexture
@@ -514,6 +515,35 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
         }
         val target = getPage(pageIndex) ?: return null
         return docY + getPageSlotHeight(target).toDouble() * clampedFraction
+    }
+
+    /**
+     * The page drawn at [point], a fraction of the viewer as [onTap] and [onLongTap] give it; null in the gap
+     * between pages or past the strip's ends. Placed as [captureRenderState] places it, slide-in and zoom
+     * included. A press beside a narrow page is on that page, as a list row is.
+     */
+    override fun pageAt(point: Offset): ImagePage? = synchronized(scrollLock) {
+        if (getPage(0) == null || height <= 0) return null
+        // Page space, from page 0's top: the band starts at the viewer's top, page 0 sits at y0 in it.
+        var y = point.y * height / safeScale - (-scrollYInternal + slideOffset).toFloat()
+        if (y >= 0f) {
+            for (index in 0..MAX_VISIBLE_PAGES) {
+                val page = getPage(index) ?: return null
+                val contentHeight = getPageHeight(page)
+                if (y < contentHeight) return page
+                y -= contentHeight + pageGapPx
+                if (y < 0f) return null
+            }
+            return null
+        }
+        // Above page 0, only ever on screen while a slide-in holds page 0 down: each slot is its content then its gap.
+        for (index in -1 downTo -MAX_VISIBLE_PAGES) {
+            val page = getPage(index) ?: return null
+            val contentHeight = getPageHeight(page)
+            y += contentHeight + pageGapPx
+            if (y >= 0f) return page.takeIf { y < contentHeight }
+        }
+        return null
     }
 
     /** Slide the current page into place after a jump - [direction] 1 when it came from below. */

@@ -342,6 +342,33 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     /** Override for the "from" page during far navigation animation */
     var transitionFromPage: ImagePage? = null
 
+    /**
+     * The page drawn at [point], a fraction of the viewer as [onTap] and [onLongTap] give it: a spread's side,
+     * null in its gap or on a side with no page, or the page shown whole, which answers for the whole viewer.
+     * Mid-turn, whichever page [transition] draws there. Null with nothing shown.
+     */
+    open fun pageAt(point: Offset): ImagePage? {
+        val current = getPage(0) ?: return null
+        val offset = pageOffset
+        val adjacent = adjacentPage(offset)
+        val (page, at) = if (adjacent == null) {
+            current to point
+        } else {
+            val (onCurrent, at) = transition.pageAt(offset, point)
+            (if (onCurrent) current else adjacent) to at
+        }
+        return if (page is ImagePage.ImageSpread) page.sideAt(at.x) else page
+    }
+
+    /** The page a turn [offset] into it draws beside the current one; null at rest. */
+    private fun adjacentPage(offset: Float): ImagePage? = when {
+        offset == 0f -> null
+        // Use override if set (for far navigation)
+        transitionFromPage != null -> transitionFromPage
+        offset > 0f -> getPage(if (isReversed) -1 else 1)
+        else -> getPage(if (isReversed) 1 else -1)
+    }
+
     // One instance for this state's lifetime, so [cleanup] can tell its own from a successor's.
     private val invalidateCallback: () -> Unit = { invalidate() }
 
@@ -596,13 +623,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             return EmptySnapshot
         }
         val offset = pageOffset
-        val adjacentPage = when {
-            offset == 0f -> null
-            // Use override if set (for far navigation)
-            transitionFromPage != null -> transitionFromPage
-            offset > 0f -> getPage(if (isReversed) -1 else 1)
-            else -> getPage(if (isReversed) 1 else -1)
-        }
+        val adjacentPage = adjacentPage(offset)
         // Only prewarms while at rest - see renderSnapshot - so a turn in flight needs no lookup.
         val nextPage = if (offset == 0f) getPage(1) else null
         onScreenPages = listOfNotNull(currentPage, adjacentPage)

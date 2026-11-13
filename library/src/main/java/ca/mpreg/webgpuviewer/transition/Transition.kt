@@ -43,6 +43,7 @@ import ca.mpreg.webgpuviewer.viewer.ImagePage
 import ca.mpreg.webgpuviewer.viewer.ImageViewerState
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.abs
 import kotlin.math.pow
 
 abstract class Transition {
@@ -90,6 +91,14 @@ abstract class Transition {
             )
         )
     }
+
+    /**
+     * Which page [render] draws at [point], a fraction of the screen, [frac] into a turn: true for page1, with
+     * the point in that page's own frame. Exact only where a transition overrides it ([TransitionBasic] and its
+     * vertical slide). Everywhere else (stacks, cube, flip, fade, sphere) it approximates: the page more than half
+     * turned in, the point unmoved, so a press near a moving edge can land on the other page.
+     */
+    internal open fun pageAt(frac: Float, point: Offset): Pair<Boolean, Offset> = (abs(frac) < 0.5f) to point
 
     internal abstract fun render(
         page1: ImagePage,

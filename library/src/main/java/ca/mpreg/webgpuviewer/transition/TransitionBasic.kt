@@ -19,6 +19,16 @@ import ca.mpreg.webgpuviewer.viewer.ImagePage
  * [ImagePage.drawBackgroundColumns].
  */
 object TransitionBasic : Transition() {
+    override fun pageAt(frac: Float, point: Offset): Pair<Boolean, Offset> =
+        slideHit(point.x, frac).let { (first, shift) -> first to point.copy(x = point.x - shift) }
+
+    /** Page1 sits [frac] screens back and page2 beside it, as [render] places them: which holds [at], and its shift. */
+    private fun slideHit(at: Float, frac: Float): Pair<Boolean, Float> {
+        val first = -frac
+        if (at >= first && at < first + 1f) return true to first
+        return false to if (frac > 0f) 1f - frac else -(frac + 1f)
+    }
+
     override fun render(
         page1: ImagePage,
         page2: ImagePage,
@@ -53,6 +63,9 @@ object TransitionBasic : Transition() {
 
     /** The same slide, vertically. */
     object Vertical : Transition() {
+        override fun pageAt(frac: Float, point: Offset): Pair<Boolean, Offset> =
+            slideHit(point.y, frac).let { (first, shift) -> first to point.copy(y = point.y - shift) }
+
         override fun render(
             page1: ImagePage,
             page2: ImagePage,
