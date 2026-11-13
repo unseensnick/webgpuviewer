@@ -214,12 +214,17 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
     /**
      * [readThrough] is the deepest page whose bottom has reached the viewport's; where
      * [onPageChange] means "reached this page", this means "read past it" - so the document's
-     * last page reads through exactly when its bottom comes on screen. Reported every frame while
-     * [isFlinging] or [isPanning] - real scroll, not merely something else invalidating a frame -
-     * not on a change alone: an edge that loses a race is lost for good, so diff it yourself.
-     * Observation only - it never moves the scroll.
+     * last page reads through exactly when its bottom comes on screen. Reported at most once a frame: for
+     * every frame whose viewport moved since the last report, whatever moved it ([scrollBy], an animation,
+     * a jump, a zoom, a decode that changes [readThrough]), and every frame of a fling or pan. Not for a frame
+     * that only redrew. Observation only - it never moves the scroll.
      */
     var onViewport: ((readThrough: ImagePage?) -> Unit)? = null
+
+    /** The viewport the last [onViewport] report saw; NaN before the first. Render thread. */
+    private var reportedCameraDocY = Float.NaN
+    private var reportedScale = Float.NaN
+    private var reportedReadThrough: ImagePage? = null
 
     // Set with [onScreenPages].
     private var marginPages: List<ImagePage> = emptyList()
@@ -611,7 +616,14 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
     override fun captureRenderState(): Any {
         val snapshot = captureLocked()
 
-        if (isFlinging || isPanning) onViewport?.runCatching { invoke(snapshot.readThrough) }
+        val moved = snapshot.cameraDocY != reportedCameraDocY || snapshot.scale != reportedScale ||
+            snapshot.readThrough !== reportedReadThrough
+        if (moved || isFlinging || isPanning) {
+            reportedCameraDocY = snapshot.cameraDocY
+            reportedScale = snapshot.scale
+            reportedReadThrough = snapshot.readThrough
+            onViewport?.runCatching { invoke(snapshot.readThrough) }
+        }
         return snapshot
     }
 
