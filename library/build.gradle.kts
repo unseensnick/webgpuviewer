@@ -1,17 +1,18 @@
+import org.gradle.api.artifacts.result.ResolvedDependencyResult
+
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.compose.compiler)
     id("com.vanniktech.maven.publish") version "0.37.0"
 }
 
-val tag: String = if (System.getenv("GITHUB_REF_TYPE") == "tag") {
-    System.getenv("GITHUB_REF_NAME")
-} else {
-    val baseVersion = providers.exec {
-        commandLine("git", "rev-parse", "--short", "HEAD")
-    }.standardOutput.asText.map { it.trim() }.getOrElse("unknown")
-    "$baseVersion-SNAPSHOT"
-}
+// scripts/version.sh is the only version source: releasing is tagging. The artifact drops the tag's
+// leading v, so tag v58.1.0 releases webgpuviewer 58.1.0.
+val versionName: String = providers.exec {
+    commandLine("bash", rootProject.file("scripts/version.sh").path)
+    isIgnoreExitValue = true
+}.standardOutput.asText.map { it.trim() }.getOrElse("").ifEmpty { "unknown" }
+val artifactVersion: String = versionName.removePrefix("v")
 
 android {
     namespace = "ca.mpreg.webgpuviewer"
@@ -68,9 +69,55 @@ dependencies {
     testImplementation(libs.androidx.webgpu)
 }
 
+/**
+ * The ivy descriptor a host resolves the release AAR through: a GitHub release is not a Maven
+ * repository, so the dependencies travel beside the AAR. Lists this build's direct runtime
+ * dependencies at the versions it resolved, androidx.webgpu among them.
+ */
+val writeIvyDescriptor by tasks.registering {
+    val runtime = configurations.named("releaseRuntimeClasspath")
+        .flatMap { it.incoming.resolutionResult.rootComponent }
+    val descriptor = layout.buildDirectory.file("outputs/ivy/ivy-$artifactVersion.xml")
+    inputs.property("version", artifactVersion)
+    outputs.file(descriptor)
+    doLast {
+        val dependencies = runtime.get().dependencies
+            .filterIsInstance<ResolvedDependencyResult>()
+            .filterNot { dependency ->
+                // A BOM shapes versions but ships no artifact.
+                val attributes = dependency.resolvedVariant.attributes
+                val category = attributes.keySet().firstOrNull { it.name == "org.gradle.category" }
+                attributes.getAttribute(category ?: return@filterNot false).toString().endsWith("platform")
+            }
+            .mapNotNull { it.selected.moduleVersion }
+            .distinctBy { "${it.group}:${it.name}" }
+            .sortedBy { "${it.group}:${it.name}" }
+            .joinToString("\n") {
+                """        <dependency org="${it.group}" name="${it.name}" rev="${it.version}" conf="default->default"/>"""
+            }
+        descriptor.get().asFile.apply { parentFile.mkdirs() }.writeText(
+            """
+            |<?xml version="1.0" encoding="UTF-8"?>
+            |<ivy-module version="2.0">
+            |    <info organisation="ca.mpreg" module="webgpuviewer" revision="$artifactVersion"/>
+            |    <configurations>
+            |        <conf name="default"/>
+            |    </configurations>
+            |    <publications>
+            |        <artifact name="webgpuviewer" type="aar" ext="aar" conf="default"/>
+            |    </publications>
+            |    <dependencies>
+            |$dependencies
+            |    </dependencies>
+            |</ivy-module>
+            |""".trimMargin()
+        )
+    }
+}
+
 afterEvaluate {
     mavenPublishing {
-        coordinates("ca.mpreg", "webgpuviewer", tag)
+        coordinates("ca.mpreg", "webgpuviewer", artifactVersion)
 
         pom {
             name.set("webgpuviewer")

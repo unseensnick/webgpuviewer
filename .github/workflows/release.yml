@@ -1,0 +1,97 @@
+name: Release
+
+# A v* tag tests and builds the library, then publishes the AAR and the ivy descriptor a host
+# resolves it through as that tag's release. A manual run does the same up to the release: its
+# files stay a workflow artifact.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # scripts/version.sh describes against tags, which a shallow clone does not have.
+          fetch-depth: 0
+
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          java-version: 21
+          distribution: temurin
+
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      - name: Version
+        id: version
+        run: |
+          name=$(bash scripts/version.sh)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+            [[ "$GITHUB_REF_NAME" =~ $semver ]] || { echo "$GITHUB_REF_NAME is not a semver tag"; exit 1; }
+            [ "$name" = "$GITHUB_REF_NAME" ] || { echo "scripts/version.sh reports $name, not $GITHUB_REF_NAME"; exit 1; }
+          fi
+          echo "Building ${name#v}"
+          echo "version=${name#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        run: ./gradlew :library:testReleaseUnitTest
+
+      - name: Build
+        run: ./gradlew :library:assembleRelease :library:writeIvyDescriptor
+
+      - name: Collect
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir dist
+          cp library/build/outputs/aar/library-release.aar "dist/webgpuviewer-$VERSION.aar"
+          cp "library/build/outputs/ivy/ivy-$VERSION.xml" dist/
+          ls -l dist
+
+      # The release job's input on a tag, and a manual run's only output.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: webgpuviewer-${{ steps.version.outputs.version }}
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: webgpuviewer-${{ needs.build.outputs.version }}
+          path: dist
+
+      # Draft, upload, then publish: releases are immutable once published, so the files go up
+      # while it can still take them, and a failed upload leaves a draft rather than a release
+      # missing its AAR.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          prerelease=()
+          case "${TAG%%+*}" in *-*) prerelease=(--prerelease) ;; esac
+          gh release create "$TAG" --draft "${prerelease[@]}" --verify-tag --title "$TAG" \
+            --notes "Built from $GITHUB_SHA by $RUN_URL."
+          gh release upload "$TAG" dist/*
+          gh release edit "$TAG" --draft=false
