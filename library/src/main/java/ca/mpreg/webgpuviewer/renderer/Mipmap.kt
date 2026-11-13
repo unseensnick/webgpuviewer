@@ -374,6 +374,7 @@ class Mipmap(
         val bottom = (rect?.bottom ?: height).coerceIn(top, height)
         val rowsPerChunk = (UPLOAD_CHUNK_BYTES / (width * bytesPerPixel)).coerceAtLeast(1)
         val tileCount = tilesRows * tilesCols
+        var sliceStart = System.nanoTime()
 
         for (r in top / tilesize until ceilDiv(bottom, tilesize)) {
             val tileY = r * tilesize
@@ -385,7 +386,7 @@ class Mipmap(
                 val x1 = minOf(right, tileX + tilesize, width)
                 var y = y0
                 while (y < y1) {
-                    // Cleanup can only land between chunks.
+                    // Cleanup can only land at a yield, so this is checked before every chunk.
                     if (textures.size != tileCount) return false
                     val rows = min(rowsPerChunk, y1 - y)
                     writeSpan(
@@ -393,7 +394,11 @@ class Mipmap(
                         x0, x1, y, y - tileY, rows,
                     )
                     y += rows
-                    yield()
+                    // As [upload]: a yield per chunk held an update to about a chunk per frame.
+                    if (System.nanoTime() - sliceStart >= UPLOAD_SLICE_NANOS) {
+                        yield()
+                        sliceStart = System.nanoTime()
+                    }
                 }
             }
         }

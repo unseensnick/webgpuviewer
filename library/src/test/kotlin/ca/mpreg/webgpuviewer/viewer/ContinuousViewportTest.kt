@@ -89,6 +89,30 @@ class ContinuousViewportTest {
     }
 
     @Test
+    fun aZoomAboutTheMiddleIsReported() {
+        state.scrollBy(1500f)
+        frame()
+        val before = reports
+        // As a gesture zooms, keeping the screen's middle still: the camera, centred there, does not move.
+        val diff = 1f / 2f - 1f / state.scale
+        state.scale = 2f
+        state.scrollBy(-0.5f * diff * state.height)
+        frame()
+        assertEquals(before + 1, reports)
+    }
+
+    @Test
+    fun aReloadedPageInPlaceIsReported() {
+        frame()
+        val before = reports
+        // The same place in a chapter loaded again: new pages at the same index, nothing moved.
+        val reloaded = List(8) { ImagePage.Dummy(1000, 1000) }
+        state.fetchPage = { reloaded.getOrNull(current + it) }
+        frame()
+        assertEquals(before + 1, reports)
+    }
+
+    @Test
     fun aJumpIsReported() {
         frame()
         val before = reports

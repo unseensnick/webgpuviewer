@@ -1146,7 +1146,7 @@ open class ImagePage {
          * The side under [pressX], a fraction of the viewer's width: [left] or [right], or null in the
          * gap or on a missing side. [offsetX] is [WebGpuRenderer.offsetX]'s.
          */
-        fun sideAt(pressX: Float, offsetX: Float = WebGpuRenderer.offsetX): ImagePage? {
+        internal fun sideAt(pressX: Float, offsetX: Float): ImagePage? {
             val seam = 0.5f + scale * (x + offsetX)
             val toLeft = if (parentWidth > 0f) scale * gapLeftOfSeam / parentWidth else 0f
             val toRight = if (parentWidth > 0f) scale * gapRightOfSeam / parentWidth else 0f
