@@ -48,7 +48,7 @@ jobs:
           echo "version=${name#v}" >> "$GITHUB_OUTPUT"
 
       - name: Test
-        run: ./gradlew :library:testReleaseUnitTest
+        run: ./gradlew :library:testDebugUnitTest
 
       - name: Build
         run: ./gradlew :library:assembleRelease :library:writeIvyDescriptor
