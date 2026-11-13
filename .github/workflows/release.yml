@@ -5,6 +5,8 @@ name: Release
 # files stay a workflow artifact.
 on:
   push:
+    branches:
+      - reikai
     tags:
       - 'v*'
   workflow_dispatch:
