@@ -21,6 +21,7 @@ import ca.mpreg.webgpuviewer.viewer.ImageViewerContinuousState.Companion.MAX_VIS
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.round
 
 class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
@@ -70,10 +71,10 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
             invalidate()
         }
 
-    /** Lowest [scale] a gesture may settle at - see [homeScale]. */
+    /** Lowest [scale] a gesture may settle at, never above [homeScale]: fully zoomed out is the floor's lowest. */
     var minScale = 0f
         get() {
-            if (field > 0) return field
+            if (field > 0) return min(field, homeScale)
             return homeScale
         }
 

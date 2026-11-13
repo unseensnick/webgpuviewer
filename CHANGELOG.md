@@ -3,6 +3,16 @@
 What each release of this fork adds on top of the upstream release it is built on. Upstream's own
 changes are in [mpreg-ca/webgpuviewer](https://github.com/mpreg-ca/webgpuviewer).
 
+## [58.1.2] - 2026-11-13
+
+Built on upstream 58.
+
+### Fixed
+
+- **A continuous viewer's home zoom below its zoom-out floor now holds after a gesture.**
+  `ImageViewerContinuousState.minScale` never exceeds `homeScale`, so a home zoom of 1% with a 10%
+  floor no longer snaps to 10% on the first touch.
+
 ## [58.1.1] - 2026-11-13
 
 Built on upstream 58.
@@ -44,5 +54,6 @@ Built on upstream 58.
 - **The continuous viewer reports the viewport on any scroll**, not only during a fling or a pan:
   `onViewport` runs whenever the position, zoom or read-through page changed, at most once a frame.
 
+[58.1.2]: https://github.com/unseensnick/webgpuviewer/releases/tag/v58.1.2
 [58.1.1]: https://github.com/unseensnick/webgpuviewer/releases/tag/v58.1.1
 [58.1.0]: https://github.com/unseensnick/webgpuviewer/releases/tag/v58.1.0
