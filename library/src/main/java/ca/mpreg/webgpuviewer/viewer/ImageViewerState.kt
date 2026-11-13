@@ -137,9 +137,9 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         }
 
     /**
-     * Space between the two sides of an [ImagePage.ImageSpread], from 0 to 1 viewport heights. Measured
-     * on screen at the spread's fit, as [ImageViewerContinuousState.pageGap] is at zoom 1, so it zooms
-     * with the content. Set on the main thread; a frame being drawn finishes with the gap it began with.
+     * Space between the two sides of an [ImagePage.ImageSpread], from 0 to 1 of a page's width. The
+     * spread fits as one sheet that much wider, so spare width takes the gap before the pages shrink,
+     * and it zooms with the content. Set on the main thread; a frame being drawn finishes with the gap it began with.
      */
     @Volatile
     var spreadGap: Float = 0f

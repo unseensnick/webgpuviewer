@@ -120,21 +120,19 @@ internal fun haloExtend(inset: Float, isLeftmost: Boolean, isRightmost: Boolean,
 
 /**
  * The horizontal spans of a grid's clip rect, [clipL] to [clipR], that its tile blits may cover: all of it,
- * or for a spread parted by [halfGap] each side of [seam], the two spans either side of the gap, so a tile
+ * or for a spread parted from [gapStart] to [gapEnd], the two spans either side of the gap, so a tile
  * straddling the gap draws none of it. In screen pixels.
  */
 internal inline fun forEachTileClipSpan(
     clipL: Float,
     clipR: Float,
-    seam: Float,
-    halfGap: Float,
+    gapStart: Float,
+    gapEnd: Float,
     action: (left: Float, right: Float) -> Unit,
 ) {
-    if (halfGap <= 0f) return action(clipL, clipR)
-    val gapLeft = seam - halfGap
-    val gapRight = seam + halfGap
-    if (gapLeft > clipL) action(clipL, min(gapLeft, clipR))
-    if (gapRight < clipR) action(max(gapRight, clipL), clipR)
+    if (gapEnd <= gapStart) return action(clipL, clipR)
+    if (gapStart > clipL) action(clipL, min(gapStart, clipR))
+    if (gapEnd < clipR) action(max(gapEnd, clipL), clipR)
 }
 
 /**
@@ -2160,7 +2158,7 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         if (useStencilMask) pass.setStencilReference(1)
         pass.setBindGroup(0, st.bindGroup ?: gridBindGroup().also { st.bindGroup = it })
         pass.setVertexBuffer(0, instances)
-        drawClipped(pass, st.clipL, st.clipT, st.clipR, st.clipB, st.snapX, st.scale * st.page.halfImageGap) {
+        drawClipped(pass, st.clipL, st.clipT, st.clipR, st.clipB, st.snapX, st.scale, st.page) {
             pass.draw(6, st.instanceCount)
         }
     }
@@ -2176,11 +2174,14 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         clipR: Float,
         clipB: Float,
         seam: Float,
-        halfGap: Float,
+        scale: Float,
+        page: ImagePage,
         draw: () -> Unit,
     ) {
-        if (halfGap <= 0f) return draw()
-        forEachTileClipSpan(clipL, clipR, seam, halfGap) { left, right ->
+        val gapStart = seam - scale * page.gapLeftOfSeam
+        val gapEnd = seam + scale * page.gapRightOfSeam
+        if (gapEnd <= gapStart) return draw()
+        forEachTileClipSpan(clipL, clipR, gapStart, gapEnd) { left, right ->
             if (right <= left) return@forEachTileClipSpan
             val bytes = clipBytes
             bytes.clear()
@@ -2220,7 +2221,7 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
             stale.bindGroup ?: gridBindGroup(staleSampler).also { stale.bindGroup = it }
         )
         pass.setVertexBuffer(0, instances)
-        drawClipped(pass, at.clipL, at.clipT, at.clipR, at.clipB, at.snapX, pageScale * st.page.halfImageGap) {
+        drawClipped(pass, at.clipL, at.clipT, at.clipR, at.clipB, at.snapX, pageScale, st.page) {
             pass.draw(6, stale.instanceCount)
         }
     }
@@ -2261,7 +2262,7 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         setBlitPipeline(pass, format, st, false)
         pass.setBindGroup(0, st.bindGroup ?: gridBindGroup().also { st.bindGroup = it })
         pass.setVertexBuffer(0, instances)
-        drawClipped(pass, st.clipL, st.clipT, st.clipR, st.clipB, st.snapX, st.scale * st.page.halfImageGap) {
+        drawClipped(pass, st.clipL, st.clipT, st.clipR, st.clipB, st.snapX, st.scale, st.page) {
             pass.draw(6, count)
         }
         instances.destroyAndRelease()
@@ -3000,7 +3001,9 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         if (images.isEmpty()) return
         val leftmost = images.minOf { it.second }
         val rightmost = images.maxOf { it.second }
-        val halfGap = s * st.page.halfImageGap
+        // Each image's inner edge reaches across its own share of the gap.
+        val gapLeftOfSeam = s * st.page.gapLeftOfSeam
+        val gapRightOfSeam = s * st.page.gapRightOfSeam
 
         Hdr.cuttingTiles = true
         try {
@@ -3009,7 +3012,8 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
                 val targetX = -originX + inset + s * srcOffsetX + si * image.offsetX
                 val targetY = centerY - originY + inset + si * image.offsetY
                 val (x, y) = solveImagePlacement(targetX, targetY, si, image, dst, dst)
-                val extend = haloExtend(inset, srcOffsetX == leftmost, srcOffsetX == rightmost, halfGap)
+                val innerGap = if (srcOffsetX == leftmost) gapLeftOfSeam else gapRightOfSeam
+                val extend = haloExtend(inset, srcOffsetX == leftmost, srcOffsetX == rightmost, innerGap)
                 tilesFilters.draw(
                     pass,
                     image,
