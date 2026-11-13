@@ -1111,8 +1111,62 @@ open class ImagePage {
      * A side may also be a [Render] page. It has no image to place, so it sits out [forEachImage]
      * and the tile grid and is drawn into its half afterwards - see [drawRenderSides]. Everything
      * that measures a side reads the page, not a decoded image, so it lays out like an image one.
+     *
+     * Two sides part by [ImageViewerState.spreadGap], each moving out from the seam by half, so the
+     * seam stays the anchor. A [Compose] side keeps the gap too, so nothing moves when it gives way
+     * to the image it stood in for.
      */
     class ImageSpread(val left: ImagePage?, val right: ImagePage?) : ImageSingle(null) {
+
+        private val gapFraction: Float get() = parent?.layoutGap ?: 0f
+
+        /** The [ImageViewerState.layoutGap] this spread was last placed under; NaN before a parent. */
+        private var placedGap = Float.NaN
+
+        /** Half the gap on screen at the fit, in screen pixels; 0 for a lone side. */
+        private val halfGapOnScreen: Float
+            get() {
+                val gap = gapFraction
+                return if (gap > 0f && left != null && right != null) 0.5f * gap * parentHeight else 0f
+            }
+
+        /** Half the gap in spread pixels: the screen gap undone by the fit, so it zooms with the content. */
+        private val halfGap: Float
+            get() {
+                val onScreen = halfGapOnScreen
+                if (onScreen <= 0f) return 0f
+                val fit = if (!hasImageSide) 1f else if (parentWidth > 0f && parentHeight > 0f) {
+                    halfWidthScale(parentWidth / 2f, parentHeight)
+                } else {
+                    0f
+                }
+                return if (fit > 0f) onScreen / fit else 0f
+            }
+
+        override val halfImageGap: Float
+            get() = halfGap
+
+        /** Offset from the seam of a side whose own half-width is [halfWidth]: outward, past [halfGap]. */
+        private fun fromSeam(isLeft: Boolean, halfWidth: Float): Float =
+            if (isLeft) -(halfWidth + halfGap) else halfWidth + halfGap
+
+        /** The width a composed side is laid out to, in screen pixels: its half less half the gap. */
+        internal fun composedSideWidth(viewportWidth: Int): Int =
+            (viewportWidth / 2 - halfGapOnScreen.roundToInt()).coerceAtLeast(1)
+
+        /**
+         * The side under [pressX], a fraction of the viewer's width: [left] or [right], or null in the
+         * gap or on a missing side. [offsetX] is [WebGpuRenderer.offsetX]'s.
+         */
+        fun sideAt(pressX: Float, offsetX: Float = WebGpuRenderer.offsetX): ImagePage? {
+            val seam = 0.5f + scale * (x + offsetX)
+            val half = if (parentWidth > 0f) scale * halfGap / parentWidth else 0f
+            return when {
+                pressX < seam - half -> left
+                pressX >= seam + half -> right
+                else -> null
+            }
+        }
 
         /** Either side as an [ImageSingle] - null for a [Render] side, which has no image. */
         private val leftSingle: ImageSingle?
@@ -1128,7 +1182,7 @@ open class ImagePage {
                 // Footprint is half the screen in screen pixels; undoing the image's fit lands it there.
                 val partner = (if (side === left) right else left)?.takeIf { it !is Compose }
                     ?: return 1f
-                val fit = fitInHalf(partner)
+                val fit = fitInHalf(partner, parentWidth / 2f, parentHeight)
                 return if (fit > 0f) 1f / fit else 1f
             }
             // Image heights only, so a composed side never makes its partner grow.
@@ -1156,7 +1210,7 @@ open class ImagePage {
         private fun counted(side: ImagePage?): Boolean =
             side != null && (side !is Compose || !hasImageSide)
 
-        private fun layoutWidth(side: ImagePage?): Float = if (counted(side)) sideWidth(side) else 0f
+        private fun layoutWidth(side: ImagePage?): Float = if (counted(side)) sideWidth(side) + halfGap else 0f
 
         /**
          * [side]'s x, y and scale as this spread draws it at [viewportWidth] ([forEachPlacedImage]'s arithmetic),
@@ -1168,7 +1222,7 @@ open class ImagePage {
                 side === right -> rightScale
                 else -> return null
             }
-            val seamOffset = (if (side === left) -0.5f else 0.5f) * side.width * sideScale
+            val seamOffset = fromSeam(side === left, 0.5f * side.width * sideScale)
             val offsetX = WebGpuRenderer.offsetX
             val offsetY = WebGpuRenderer.offsetY
             return floatArrayOf(
@@ -1180,8 +1234,8 @@ open class ImagePage {
 
         /** Runs [action] for each present side, with its pixel offset from the seam. */
         private inline fun forEachSide(action: (side: ImagePage, offsetX: Float, scale: Float) -> Unit) {
-            left?.let { action(it, -0.5f * it.width * leftScale, leftScale) }
-            right?.let { action(it, 0.5f * it.width * rightScale, rightScale) }
+            left?.let { action(it, fromSeam(true, 0.5f * it.width * leftScale), leftScale) }
+            right?.let { action(it, fromSeam(false, 0.5f * it.width * rightScale), rightScale) }
         }
 
         override var highQuality: Boolean
@@ -1194,8 +1248,9 @@ open class ImagePage {
         override val frameVersion: Int
             get() = (left?.frameVersion ?: 0) + (right?.frameVersion ?: 0)
 
+        /** The gap too: tiles are cut in spread pixels, where a new gap moves the sides. */
         override val contentVersion: Int
-            get() = (leftSingle?.contentVersion ?: 0) + (rightSingle?.contentVersion ?: 0)
+            get() = (leftSingle?.contentVersion ?: 0) + (rightSingle?.contentVersion ?: 0) + halfGap.toRawBits()
 
         /** No image of its own - [left]/[right] hold them, and [forEachImage] walks both. */
         override val currentImage: Image?
@@ -1208,8 +1263,12 @@ open class ImagePage {
         override fun forEachImage(
             action: (image: Image, offsetX: Float, imageScale: Float) -> Unit
         ) {
-            leftSingle?.currentImage?.let { action(it, -0.5f * it.shownWidth * leftScale, leftScale) }
-            rightSingle?.currentImage?.let { action(it, 0.5f * it.shownWidth * rightScale, rightScale) }
+            leftSingle?.currentImage?.let {
+                action(it, fromSeam(true, 0.5f * it.shownWidth * leftScale), leftScale)
+            }
+            rightSingle?.currentImage?.let {
+                action(it, fromSeam(false, 0.5f * it.shownWidth * rightScale), rightScale)
+            }
         }
 
         override val hasUploadedImage: Boolean
@@ -1251,13 +1310,25 @@ open class ImagePage {
             parent: ImageViewerState, scope: CoroutineScope?, onInvalidate: () -> Unit
         ) {
             super.attach(parent, scope, onInvalidate)
+            // Homed by the first attach, under the gap of the day.
+            if (placedGap.isNaN()) placedGap = parent.layoutGap
             left?.attach(parent, scope, onInvalidate)
             right?.attach(parent, scope, onInvalidate)
         }
 
         override fun cameOnScreen() {
+            // Placed off screen under another gap: its home has moved since.
+            val gap = gapFraction
+            if (!placedGap.isNaN() && placedGap != gap && animationJob?.isActive != true) {
+                setPos(homeX, homeY, homeScale)
+            }
+            placedGap = gap
             left?.cameOnScreen()
             right?.cameOnScreen()
+        }
+
+        override fun layoutGapApplied(gap: Float) {
+            placedGap = gap
         }
 
         /** True when either side paints itself rather than blitting a decoded image. */
@@ -1311,7 +1382,7 @@ open class ImagePage {
         override fun leafRect(dst: GPUTexture, left: Boolean): FloatArray? {
             val side = (if (left) this.left else this.right) ?: return null
             val sideScale = sideScale(side)
-            val placeX = x + (if (left) -0.5f else 0.5f) * sideWidth(side) / dst.width
+            val placeX = x + fromSeam(left, 0.5f * sideWidth(side)) / dst.width
             (side as? ImageSingle)?.currentImage?.let { image ->
                 if (image.mipmaps.isNotEmpty()) {
                     return image.placement(
@@ -1333,6 +1404,12 @@ open class ImagePage {
 
         /** The seam, not the midpoint - the two sides can be different widths. */
         override fun spineX(dst: GPUTexture): Float? {
+            // Parted, the middle of the gap, so a flip turns about it and each side's colour fills its half.
+            if (halfGap > 0f) {
+                val l = leafRect(dst, true)
+                val r = leafRect(dst, false)
+                if (l != null && r != null) return 0.5f * (l[2] + r[0])
+            }
             leafRect(dst, true)?.let { return it[2] }
             leafRect(dst, false)?.let { return it[0] }
             return null
@@ -1394,7 +1471,8 @@ open class ImagePage {
                     leftSingle?.image?.let { it.shownWidth - (it.visibleTrim?.left ?: 0) } ?: left?.width ?: 0
                 val rightW = if (!counted(right)) 0 else
                     rightSingle?.image?.let { it.visibleTrim?.right ?: it.shownWidth } ?: right?.width ?: 0
-                return (leftW * leftScale + rightW * rightScale).roundToInt()
+                val gaps = (if (counted(left)) halfGap else 0f) + (if (counted(right)) halfGap else 0f)
+                return (leftW * leftScale + rightW * rightScale + gaps).roundToInt()
             }
 
         /** Visible height after trim (max of trim heights) */
@@ -1443,13 +1521,13 @@ open class ImagePage {
             // Composed sides alone are half-screen in screen pixels: 1:1, known before they have a size.
             if (!hasImageSide) 1f else
             listOfNotNull(left, right).filter { counted(it) && it.width > 0 && it.height > 0 }
-                .minOfOrNull { side -> minOf(halfWidth / side.width, parentHeight / side.height) }
+                .minOfOrNull { side -> fitInHalf(side, halfWidth, parentHeight) }
                 ?.coerceAtLeast(0.01f) ?: 0.01f
 
-        /** [side]'s fit in half the viewport, as [halfWidthScale] takes it; 0 before a size. */
-        private fun fitInHalf(side: ImagePage): Float {
-            if (side.width <= 0 || side.height <= 0 || parentWidth <= 0f || parentHeight <= 0f) return 0f
-            return minOf(parentWidth / 2f / side.width, parentHeight / side.height)
+        /** [side]'s fit in a [halfWidth] half less half the gap, as [halfWidthScale] takes it; 0 before a size. */
+        private fun fitInHalf(side: ImagePage, halfWidth: Float, height: Float): Float {
+            if (side.width <= 0 || side.height <= 0 || halfWidth <= 0f || height <= 0f) return 0f
+            return minOf((halfWidth - halfGapOnScreen).coerceAtLeast(1f) / side.width, height / side.height)
         }
     }
 
@@ -1629,6 +1707,12 @@ open class ImagePage {
 
     /** True if this page uses half-screen layout (dual page or single LEFT/RIGHT). */
     open val isHalfWidth: Boolean get() = false
+
+    /** Half the space [ImageSingle.forEachImage] leaves between two images, in page pixels; 0 where they meet. */
+    internal open val halfImageGap: Float get() = 0f
+
+    /** [ImageViewerState.applySpreadGap] has placed this page under [gap]. */
+    internal open fun layoutGapApplied(gap: Float) {}
 
     /** Left/right edges [minX]/[maxX] pan between: trim's edges once [trimmed], else raw span. */
     protected open fun xEdges(trimmed: Boolean): Pair<Float, Float> = 0f to width.toFloat()

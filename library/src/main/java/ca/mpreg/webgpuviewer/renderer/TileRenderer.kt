@@ -103,6 +103,41 @@ private fun versionOf(page: ImagePage.ImageSingle): Long =
     (page.contentVersion.toLong() shl 32) or (page.filterSeed.toLong() and 0xFFFFFFFFL)
 
 /**
+ * How far a tile's halo extends an image's edges, as a clamped read would: top and bottom always, the
+ * outer ends of the row in full, and an inner edge only across [halfGap], half the space a parted spread
+ * leaves, beyond which the other image is there to read. Null with no halo. In the tile's pixels.
+ */
+internal fun haloExtend(inset: Float, isLeftmost: Boolean, isRightmost: Boolean, halfGap: Float): Extend? {
+    if (inset <= 0f) return null
+    val inner = halfGap.coerceIn(0f, inset)
+    return Extend(
+        left = if (isLeftmost) inset else inner,
+        top = inset,
+        right = if (isRightmost) inset else inner,
+        bottom = inset,
+    )
+}
+
+/**
+ * The horizontal spans of a grid's clip rect, [clipL] to [clipR], that its tile blits may cover: all of it,
+ * or for a spread parted by [halfGap] each side of [seam], the two spans either side of the gap, so a tile
+ * straddling the gap draws none of it. In screen pixels.
+ */
+internal inline fun forEachTileClipSpan(
+    clipL: Float,
+    clipR: Float,
+    seam: Float,
+    halfGap: Float,
+    action: (left: Float, right: Float) -> Unit,
+) {
+    if (halfGap <= 0f) return action(clipL, clipR)
+    val gapLeft = seam - halfGap
+    val gapRight = seam + halfGap
+    if (gapLeft > clipL) action(clipL, min(gapLeft, clipR))
+    if (gapRight < clipR) action(max(gapRight, clipL), clipR)
+}
+
+/**
  * Solve the (x, y) [RenderPage.render]/[RenderPage.renderFast] need so [image] lands centred at
  * screen position ([targetX], [targetY]) - inverts [Image.prepareForRender]'s placement math for
  * an arbitrary target.
@@ -220,7 +255,8 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
 
         private val device get() = WebGpuRenderer.device
 
-        private val timestampsSupported = device.hasFeature(FeatureName.TimestampQuery)
+        // Lazy, as the samplers below are: a viewer state built before the device, as in a test, reads none.
+        private val timestampsSupported by lazy { device.hasFeature(FeatureName.TimestampQuery) }
 
         // Nearest: tiles are blitted 1:1 at integer pixel positions, so this is an exact copy.
         private val blitSampler by lazy {
@@ -1355,6 +1391,9 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
     private val frameBytes =
         ByteBuffer.allocateDirect(FRAME_IMMEDIATE_BYTES).order(ByteOrder.nativeOrder())
 
+    /** [drawClipped]'s rewrite of FrameParams.clip alone. Render thread only. */
+    private val clipBytes = ByteBuffer.allocateDirect(16).order(ByteOrder.nativeOrder())
+
     /** [StaleTiles] placed at [at], at [pageScale] rather than their own. */
     private class StaleDraw(val tiles: StaleTiles, val at: GridPlacement, val pageScale: Float)
 
@@ -2121,7 +2160,35 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         if (useStencilMask) pass.setStencilReference(1)
         pass.setBindGroup(0, st.bindGroup ?: gridBindGroup().also { st.bindGroup = it })
         pass.setVertexBuffer(0, instances)
-        pass.draw(6, st.instanceCount)
+        drawClipped(pass, st.clipL, st.clipT, st.clipR, st.clipB, st.snapX, st.scale * st.page.halfImageGap) {
+            pass.draw(6, st.instanceCount)
+        }
+    }
+
+    /**
+     * Runs [draw], a blit through the immediates [setBlitPipeline] just set, once per span of the clip
+     * rect [forEachTileClipSpan] leaves: once as set for a page with no gap, else once a side.
+     */
+    private inline fun drawClipped(
+        pass: GPURenderPassEncoder,
+        clipL: Float,
+        clipT: Float,
+        clipR: Float,
+        clipB: Float,
+        seam: Float,
+        halfGap: Float,
+        draw: () -> Unit,
+    ) {
+        if (halfGap <= 0f) return draw()
+        forEachTileClipSpan(clipL, clipR, seam, halfGap) { left, right ->
+            if (right <= left) return@forEachTileClipSpan
+            val bytes = clipBytes
+            bytes.clear()
+            bytes.putFloat(left).putFloat(clipT).putFloat(right).putFloat(clipB)
+            bytes.flip()
+            pass.setImmediates(CLIP_IMMEDIATE_OFFSET, bytes)
+            draw()
+        }
     }
 
     /**
@@ -2153,7 +2220,9 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
             stale.bindGroup ?: gridBindGroup(staleSampler).also { stale.bindGroup = it }
         )
         pass.setVertexBuffer(0, instances)
-        pass.draw(6, stale.instanceCount)
+        drawClipped(pass, at.clipL, at.clipT, at.clipR, at.clipB, at.snapX, pageScale * st.page.halfImageGap) {
+            pass.draw(6, stale.instanceCount)
+        }
     }
 
     /**
@@ -2192,7 +2261,9 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         setBlitPipeline(pass, format, st, false)
         pass.setBindGroup(0, st.bindGroup ?: gridBindGroup().also { st.bindGroup = it })
         pass.setVertexBuffer(0, instances)
-        pass.draw(6, count)
+        drawClipped(pass, st.clipL, st.clipT, st.clipR, st.clipB, st.snapX, st.scale * st.page.halfImageGap) {
+            pass.draw(6, count)
+        }
         instances.destroyAndRelease()
     }
 
@@ -2921,8 +2992,7 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         val levelZero = imageChain.isActive || tilesFilters.isActive
 
         // A halo past the page's edge would read nothing, which a network takes for black, darkening
-        // the outermost rows. So the edges are extended as a clamped read would: top and bottom for
-        // every image, sides only at the outer ends - between two pages, the other page is there.
+        // the outermost rows. So the edges are extended as a clamped read would - see [haloExtend].
         val images = ArrayList<Triple<Image, Float, Float>>()
         st.page.forEachImage { image, offsetX, imageScale ->
             if (image.mipmaps.isNotEmpty()) images.add(Triple(image, offsetX, imageScale))
@@ -2930,6 +3000,7 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         if (images.isEmpty()) return
         val leftmost = images.minOf { it.second }
         val rightmost = images.maxOf { it.second }
+        val halfGap = s * st.page.halfImageGap
 
         Hdr.cuttingTiles = true
         try {
@@ -2938,12 +3009,7 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
                 val targetX = -originX + inset + s * srcOffsetX + si * image.offsetX
                 val targetY = centerY - originY + inset + si * image.offsetY
                 val (x, y) = solveImagePlacement(targetX, targetY, si, image, dst, dst)
-                val extend = if (inset > 0f) Extend(
-                    left = if (srcOffsetX == leftmost) inset else 0f,
-                    top = inset,
-                    right = if (srcOffsetX == rightmost) inset else 0f,
-                    bottom = inset,
-                ) else null
+                val extend = haloExtend(inset, srcOffsetX == leftmost, srcOffsetX == rightmost, halfGap)
                 tilesFilters.draw(
                     pass,
                     image,
@@ -3447,7 +3513,10 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
     }
 }
 
-private const val BLIT_SHADER = """
+/** Byte offset of FrameParams.clip in [BLIT_SHADER]'s immediates: after snap and dst_size. */
+internal const val CLIP_IMMEDIATE_OFFSET = 16
+
+internal const val BLIT_SHADER = """
 struct FrameParams {
     // Snapped screen-pixel position of the grid's centre; the tile grid hangs off it.
     snap: vec2<f32>,

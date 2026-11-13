@@ -63,6 +63,8 @@ dependencies {
 
     api(libs.androidx.webgpu)
     testImplementation("junit:junit:4.13.2")
+    // A spread lays out against its viewer, whose state reads the system's resources.
+    testImplementation("org.robolectric:robolectric:4.17")
     testImplementation(libs.androidx.webgpu)
 }
 

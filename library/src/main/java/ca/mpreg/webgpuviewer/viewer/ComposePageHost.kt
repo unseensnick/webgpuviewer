@@ -205,8 +205,8 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
 
         // A zoomed-out continuous viewer shows as many pages as fit, so reach follows the last frame.
         val below = if (state is ImageViewerContinuousState) state.pagesBelow + 1 else 1
-        val wanted = LinkedHashMap<ImagePage.Compose, Boolean>()
-        for (offset in -1..below) state.getPage(offset)?.collectComposePages(wanted, spread = false)
+        val wanted = LinkedHashMap<ImagePage.Compose, ImagePage.ImageSpread?>()
+        for (offset in -1..below) state.getPage(offset)?.collectComposePages(wanted, spread = null)
 
         renderers.keys.filter { it !in wanted }.forEach { page ->
             if (state.coveredBy === page) state.coveredBy = null
@@ -215,7 +215,7 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
         wanted.forEach { (page, spread) ->
             if (page.destroyed) return@forEach
             renderers.getOrPut(page) { PageRenderer(page, scope, parentComposition) }
-                .isSpreadSide = spread
+                .spread = spread
         }
     }
 
@@ -305,21 +305,6 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
         return seen.takeIf { renderer.stillPasses >= STILL_PASSES }
     }
 
-    /** A spread side may be a composition and gets half the viewport, so it's tracked, not inferred. */
-    private fun ImagePage.collectComposePages(
-        into: MutableMap<ImagePage.Compose, Boolean>,
-        spread: Boolean,
-    ) {
-        when (this) {
-            is ImagePage.Compose -> into[this] = spread
-            is ImagePage.ImageSpread -> {
-                left?.collectComposePages(into, spread = true)
-                right?.collectComposePages(into, spread = true)
-            }
-
-            else -> Unit
-        }
-    }
 
     /**
      * Runs the capture pass while bound: every frame while a page tracks its content, else every
@@ -527,8 +512,10 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
         /** Whether [view] was built, so release never constructs it. */
         val hasView: Boolean get() = built
 
-        /** Half the viewport, when this is a spread side. */
-        var isSpreadSide: Boolean = false
+        /** The spread this is a side of, which lays it out in its half less the gap; null for a page. */
+        var spread: ImagePage.ImageSpread? = null
+
+        val isSpreadSide: Boolean get() = spread != null
 
         /** Where the window is drawing this page, or null while the render pass has it. */
         var placement: PagePlacement? = null
@@ -681,13 +668,13 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
         }
 
         /**
-         * [ImagePage.Compose.size] in this viewer's slot: the viewport, halved widthwise for a spread side.
+         * [ImagePage.Compose.size] in this viewer's slot: the viewport, or a spread side's half less the gap.
          * Null while the viewport is unsized.
          */
         private fun resolveSize(): IntSize? {
             val state = page.parent ?: return null
             val continuous = state is ImageViewerContinuousState
-            val maxWidth = if (isSpreadSide) state.width / 2 else state.width
+            val maxWidth = composedSlotWidth(spread, state.width)
             // Paged: below an avoided cutout, or a full-height page pans by its height ([ImagePage.nudgedYBounds]).
             val maxHeight = if (continuous) state.height else state.viewportHeight.toInt()
             if (maxWidth <= 0 || maxHeight <= 0) return null
@@ -967,3 +954,26 @@ fun screenToPageMatrix(
 ): Matrix? = pagePlacement(
     viewportWidth, viewportHeight, pageWidth, pageHeight, x, y, scale, offsetX, offsetY,
 )?.screenToPage()
+
+/**
+ * Each composition in this page, against the spread it is a side of (null for a page of its own). A side gets its
+ * half of the viewport less the gap, so it's tracked, not inferred.
+ */
+internal fun ImagePage.collectComposePages(
+    into: MutableMap<ImagePage.Compose, ImagePage.ImageSpread?>,
+    spread: ImagePage.ImageSpread? = null,
+) {
+    when (this) {
+        is ImagePage.Compose -> into[this] = spread
+        is ImagePage.ImageSpread -> {
+            left?.collectComposePages(into, spread = this)
+            right?.collectComposePages(into, spread = this)
+        }
+
+        else -> Unit
+    }
+}
+
+/** How wide a composition lays out in a viewport [viewportWidth] wide: all of it, or [spread]'s side of it. */
+internal fun composedSlotWidth(spread: ImagePage.ImageSpread?, viewportWidth: Int): Int =
+    spread?.composedSideWidth(viewportWidth) ?: viewportWidth

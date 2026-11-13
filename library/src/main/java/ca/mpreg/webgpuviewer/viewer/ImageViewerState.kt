@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.util.fastCoerceIn
 import androidx.webgpu.GPUColor
 import androidx.webgpu.GPUCommandEncoder
 import androidx.webgpu.GPURenderPassColorAttachment
@@ -134,6 +135,53 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             }
             invalidate()
         }
+
+    /**
+     * Space between the two sides of an [ImagePage.ImageSpread], from 0 to 1 viewport heights. Measured
+     * on screen at the spread's fit, as [ImageViewerContinuousState.pageGap] is at zoom 1, so it zooms
+     * with the content. Set on the main thread; a frame being drawn finishes with the gap it began with.
+     */
+    @Volatile
+    var spreadGap: Float = 0f
+        set(value) {
+            if (value.isNaN() || value.isInfinite()) return
+            val clamped = value.fastCoerceIn(0f, 1f)
+            if (clamped == field) return
+            field = clamped
+            // Mid-draw, [collect] takes it up before the next capture instead.
+            if (!drawingFrame) applySpreadGap()
+            invalidate()
+        }
+
+    /** The [spreadGap] spreads lay out by: changed on the main thread only while no frame is drawing. */
+    @Volatile
+    internal var layoutGap: Float = 0f
+        private set
+
+    @Volatile
+    private var drawingFrame = false
+
+    /**
+     * Moves [layoutGap] to [spreadGap]. Pages on screen at home stay there, as for [displayCutoutTopPx];
+     * any other is panned back inside the new bounds. Spreads off screen re-home as they arrive.
+     */
+    private fun applySpreadGap() {
+        val gap = spreadGap
+        if (gap == layoutGap) return
+        val pages = onScreenPages.filter { it.animationJob?.isActive != true }
+        // Before the change, which moves home.
+        val atHome = pages.filter { it.atHome }
+        layoutGap = gap
+        for (page in pages) {
+            if (page in atHome) {
+                page.setPos(page.homeX, page.homeY, page.homeScale)
+            } else {
+                page.setPos(x = page.x.fastCoerceIn(page.minX(page.scale), page.maxX(page.scale)))
+            }
+            page.layoutGapApplied(gap)
+        }
+        Transition.invalidateCache()
+    }
 
     /** Top padding clearing the display cutout, in pixels. */
     val cutoutTopPx: Float
@@ -426,8 +474,11 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             renderWake.tryReceive()
             // Hidden under the window. Uncovering invalidates, so the surface catches up then.
             if (windowCovers()) continue
+            // Between frames, so both sides of the next one lay out with the same gap.
+            applySpreadGap()
             // Captured here, drawn on the GPU thread below - see this function's doc.
             val snapshot = captureRenderState() ?: continue
+            drawingFrame = true
             drawing = launch(dispatcher) {
                 try {
                     if (holdUntilFinal && held(snapshot)) return@launch
@@ -460,6 +511,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
                     }
                 } finally {
                     tiles.endFrame()
+                    drawingFrame = false
                 }
             }
         }
