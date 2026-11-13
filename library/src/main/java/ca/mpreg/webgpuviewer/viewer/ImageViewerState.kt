@@ -343,13 +343,6 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     var transitionFromPage: ImagePage? = null
 
     /**
-     * Most bytes of capture scratch (a bitmap and an upload buffer each) the Compose pages in reach hold at once.
-     * Pages with a capture to take share it, those with none yet first, then nearest the current page; one always
-     * captures. A page past it keeps showing its last capture, or waits for its first, until it comes within.
-     */
-    var composeCaptureBudgetBytes: Long = 64L shl 20
-
-    /**
      * The page drawn at [point], a fraction of the viewer as [onTap] and [onLongTap] give it: a spread's side,
      * null in its gap or on a side with no page, or the page shown whole, which answers for the whole viewer.
      * Mid-turn, whichever page [transition] draws there. Null with nothing shown.
@@ -364,7 +357,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             val (onCurrent, at) = transition.pageAt(offset, point)
             (if (onCurrent) current else adjacent) to at
         }
-        return if (page is ImagePage.ImageSpread) page.sideAt(at.x) else page
+        return if (page is ImagePage.ImageSpread) page.sideAt(at.x, WebGpuRenderer.offsetX) else page
     }
 
     /** The page a turn [offset] into it draws beside the current one; null at rest. */

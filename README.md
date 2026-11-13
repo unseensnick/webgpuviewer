@@ -10,7 +10,7 @@ The fork stays a small set of commits on top of an upstream release.
 
 ## What the fork adds
 
-On top of upstream 58, as release `58.1.0` (details in [CHANGELOG.md](CHANGELOG.md)):
+On top of upstream 58, as release `58.1.1` (details in [CHANGELOG.md](CHANGELOG.md)):
 
 - **Space between a spread's two pages**, as a share of one page's width. The spread uses spare
   screen width before its pages shrink, and a single page or a wide page beside a spread keeps the
@@ -19,8 +19,8 @@ On top of upstream 58, as release `58.1.0` (details in [CHANGELOG.md](CHANGELOG.
   position, zoom or read-through page changed, so a programmatic scroll is reported like a fling.
 - **`ImageViewerState.pageAt`**, the page under a point: a spread's side, nothing in the gap, or
   the page shown whole, also mid-turn and on the continuous strip.
-- **A memory budget for Compose page captures** (`composeCaptureBudgetBytes`, 64 MiB by default), so
-  a strip of loading or error pages does not hold a full-size capture for every page in reach.
+- **One shared capture scratch for Compose pages**, so a strip of loading or error pages holds one
+  page's capture memory instead of one per page in reach, which ran the Java heap out.
 
 ## Branches and releases
 

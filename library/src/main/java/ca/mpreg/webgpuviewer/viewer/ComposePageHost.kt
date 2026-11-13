@@ -109,6 +109,21 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
     /** Every-frame passes since the last [reconcile], for [REACH_BACKSTOP_PASSES]. */
     private var passesSinceReconcile = 0
 
+    /*
+     * One capture's scratch, shared by every page and used by one capture at a time. On Android a direct buffer
+     * is a Java array, so one per page in reach (up to 27 full-screen ones zoomed out) ran the heap out. Reused
+     * once the upload has copied it, which [uploading] covers, and freed when no Compose page is in reach.
+     */
+    private var scratch: Bitmap? = null
+    private var pixels: ByteBuffer? = null
+
+    @Volatile
+    private var uploading = false
+
+    /** Whose turn the one capture is: the page the window carries, then pages on screen, then the longest waiting. */
+    private val captureTurns =
+        compareBy<PageRenderer>({ it.placement == null }, { !it.page.isOnScreen }, { it.lastCaptureNanos })
+
     private val onFrame = Choreographer.FrameCallback {
         // Backstop for unannounced changes, e.g. a neighbour replaced while the surface skips frames.
         if (!pendingImmediate || ++passesSinceReconcile >= REACH_BACKSTOP_PASSES) reachDirty = true
@@ -120,9 +135,8 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
             reconcile()
         }
         placePages()
-        applyCaptureBudget()
         // Per page, so one throwing (e.g. device lost) costs only its own frame. [renderers] isn't modified here.
-        for (renderer in renderers.values) {
+        for (renderer in renderers.values.sortedWith(captureTurns)) {
             try {
                 renderer.captureIfDirty()
             } catch (e: Throwable) {
@@ -188,6 +202,7 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
         pumping = false
         renderers.values.toList().forEach { it.release() }
         renderers.clear()
+        dropScratch()
         owner = null
         gestureMap = null
         state = null
@@ -207,34 +222,18 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
         // A zoomed-out continuous viewer shows as many pages as fit, so reach follows the last frame.
         val below = if (state is ImageViewerContinuousState) state.pagesBelow + 1 else 1
         val wanted = LinkedHashMap<ImagePage.Compose, ImagePage.ImageSpread?>()
-        // Steps from the current page, for the capture budget.
-        val distance = HashMap<ImagePage.Compose, Int>()
-        for (offset in -1..below) {
-            state.getPage(offset)?.collectComposePages(wanted, spread = null)
-            wanted.keys.forEach { distance.putIfAbsent(it, abs(offset)) }
-        }
+        for (offset in -1..below) state.getPage(offset)?.collectComposePages(wanted, spread = null)
 
         renderers.keys.filter { it !in wanted }.forEach { page ->
             if (state.coveredBy === page) state.coveredBy = null
             renderers.remove(page)?.release()
         }
+        if (renderers.isEmpty() && wanted.isEmpty()) dropScratch()
         wanted.forEach { (page, spread) ->
             if (page.destroyed) return@forEach
-            renderers.getOrPut(page) { PageRenderer(page, scope, parentComposition) }.apply {
-                this.spread = spread
-                this.distance = distance[page] ?: 0
-            }
+            renderers.getOrPut(page) { PageRenderer(page, scope, parentComposition) }
+                .spread = spread
         }
-    }
-
-    /** Every pass, since a page's size and what it has to capture change from one pass to the next. */
-    private fun applyCaptureBudget() {
-        val state = state ?: return
-        val budgeted = withinCaptureBudget(
-            renderers.mapNotNull { (page, renderer) -> renderer.claim()?.let { CaptureClaim(page, it) } },
-            state.composeCaptureBudgetBytes,
-        )
-        renderers.forEach { (page, renderer) -> renderer.overBudget = page !in budgeted }
     }
 
     /**
@@ -538,12 +537,6 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
         /** Where the window is drawing this page, or null while the render pass has it. */
         var placement: PagePlacement? = null
 
-        /** Past [ImageViewerState.composeCaptureBudgetBytes]: holds its last capture, no scratch. */
-        var overBudget = false
-
-        /** Steps from the current page, nearest first for the budget. */
-        var distance = 0
-
         /** Where the last pass found this page, carried or not - see [continuousPlacement]. */
         var lastSeen: PagePlacement? = null
 
@@ -568,29 +561,6 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
 
         private var dirty = true
 
-        /** Passes since the last capture with nothing new to capture, see [IDLE_SCRATCH_PASSES]. */
-        private var idlePasses = 0
-
-        /** This page's claim on the capture budget this pass, or null when it neither holds nor needs scratch. */
-        fun claim(): CaptureNeed? {
-            if (released || page.destroyed) return null
-            val need = CaptureNeed(
-                onScreen = page.isOnScreen,
-                captured = page.hasSnapshot,
-                distance = distance,
-                bytes = captureBytes(),
-            )
-            return need.takeIf { claimsCaptureScratch(it, warmingUp = warmup > 0, dirty, holdsScratch = scratch != null) }
-        }
-
-        /** The page's size, or before it has one, its slot's: an Auto or Wrap page is unsized until it captures. */
-        private fun captureBytes(): Long {
-            val size = if (page.width > 0 && page.height > 0) IntSize(page.width, page.height) else slotSize()
-            return (size?.width ?: 0).toLong() * (size?.height ?: 0) * CAPTURE_BYTES_PER_PIXEL
-        }
-
-        @Volatile
-        private var uploading = false
         private var released = false
 
         /**
@@ -599,14 +569,12 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
          */
         private var warmup = 0
 
-        private var scratch: Bitmap? = null
-        private var pixels: ByteBuffer? = null
-
         /** The size [view] was last laid out at, so an unchanged one costs no layout pass. */
         private var laidOut: IntSize? = null
 
-        /** Last capture time, to pace captures of a page the window already shows. */
-        private var lastCaptureNanos = 0L
+        /** Last capture time, to pace captures of a page the window already shows and to take turns. */
+        var lastCaptureNanos = 0L
+            private set
 
         /**
          * Consecutive capture failures at the current size, and passes with no content size; past the cap,
@@ -653,7 +621,6 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
             // The renderer singleton frees every texture when its surface goes; capturing after that
             // segfaults the render thread rather than throwing.
             if (!WebGpuRenderer.isAvailable) return
-            if (uploading) return
 
             // Before the size is resolved, because a page wrapping its content has nothing to
             // measure until the view is attached and the composition has landed in it.
@@ -683,32 +650,17 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
                 dirty = true
             }
 
-            // Past the budget a page keeps its last capture, for the surface and for a handover from the window,
-            // and one with none waits its turn.
-            if (overBudget) {
-                dropScratch()
-                return
-            }
-
             // Only on-screen pages capture every frame; off screen an endless progress ring would cost an
             // upload per frame, competing with decodes. Not before [warmup]: early captures are often blank.
-            if (!page.isOnScreen && page.hasSnapshot && warmup == 0) {
-                // Captured and hidden: drop the scratch rather than hold it for a page that may never show.
-                if (placement == null) dropScratch()
-                return
-            }
+            if (!page.isOnScreen && page.hasSnapshot && warmup == 0) return
+            // The shared scratch is busy; this page keeps its turn, warmup and dirty flag for a later pass.
+            if (uploading) return
 
             if (warmup > 0) {
                 warmup--
                 dirty = true
             }
-            // Nothing to capture: after a while the scratch goes back to the budget, kept meanwhile for a page
-            // that changes every few frames (a percentage), which would otherwise allocate it per change.
-            if (!dirty) {
-                if (page.hasSnapshot && !keepsIdleScratch(++idlePasses)) dropScratch()
-                return
-            }
-            idlePasses = 0
+            if (!dirty) return
 
             // While the window shows it live, the snapshot only serves a handover, so captures are paced.
             if (placement != null && warmup == 0 && page.hasSnapshot) {
@@ -732,7 +684,10 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
         private fun resolveSize(): IntSize? {
             val state = page.parent ?: return null
             val continuous = state is ImageViewerContinuousState
-            val (maxWidth, maxHeight) = slotSize() ?: return null
+            val maxWidth = composedSlotWidth(spread, state.width)
+            // Paged: below an avoided cutout, or a full-height page pans by its height ([ImagePage.nudgedYBounds]).
+            val maxHeight = if (continuous) state.height else state.viewportHeight.toInt()
+            if (maxWidth <= 0 || maxHeight <= 0) return null
 
             val resolved = when (val size = page.size) {
                 is ComposePageSize.Of -> IntSize(size.width, size.height)
@@ -752,15 +707,6 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
             // [Of] sizes beyond that or under a pixel are clamped, not failed.
             val limit = maxCaptureSide()
             return IntSize(resolved.width.coerceIn(1, limit), resolved.height.coerceIn(1, limit))
-        }
-
-        /** The viewport, or a spread side's half less the gap; null while unsized. */
-        private fun slotSize(): IntSize? {
-            val state = page.parent ?: return null
-            val width = composedSlotWidth(spread, state.width)
-            // Paged: below an avoided cutout, or a full-height page pans by its height ([ImagePage.nudgedYBounds]).
-            val height = if (state is ImageViewerContinuousState) state.height else state.viewportHeight.toInt()
-            return IntSize(width, height).takeIf { width > 0 && height > 0 }
         }
 
         private fun maxCaptureSide(): Int =
@@ -800,9 +746,9 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
 
         /** Draws the content into the scratch bitmap and uploads it as the page's image. */
         private fun upload() {
-            val bitmap = scratchBitmap()
+            val size = IntSize(page.width, page.height)
+            val bitmap = scratchBitmap(size)
             val buffer = pixels ?: return
-            val size = IntSize(bitmap.width, bitmap.height)
 
             canvas.setBitmap(bitmap)
             try {
@@ -840,34 +786,6 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
 
         /** Reused: a Canvas per frame is an allocation per frame. */
         private val canvas = Canvas()
-
-        /** Frees the scratch, which the next capture reallocates. Never while an upload reads it. */
-        private fun dropScratch() {
-            if (uploading) return
-            scratch?.recycle()
-            scratch = null
-            pixels = null
-        }
-
-        /** The page-sized bitmap this draws into, reallocated only when the page resizes. */
-        private fun scratchBitmap(): Bitmap {
-            val existing = scratch
-            if (existing != null && !existing.isRecycled &&
-                existing.width == page.width && existing.height == page.height
-            ) {
-                return existing
-            }
-            existing?.recycle()
-            // Dropped first so a throw below can't leave [scratch] pointing at the recycled bitmap.
-            scratch = null
-            pixels = null
-            // ARGB_8888 is RGBA byte order, matching RGBA8Unorm; writeTexture needs a direct native-order
-            // buffer. Sides are capped by [maxCaptureSide], so this fits an Int.
-            val bitmap = Bitmap.createBitmap(page.width, page.height, Bitmap.Config.ARGB_8888)
-            pixels = ByteBuffer.allocateDirect(page.width * page.height * Int.SIZE_BYTES)
-                .order(ByteOrder.nativeOrder())
-            return bitmap.also { scratch = it }
-        }
 
         /**
          * Whether a gesture can map onto the composition: only while the window carries this page. Otherwise
@@ -917,10 +835,41 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
             }
             // Detaching disposes the composition, so an out-of-reach page costs nothing in the viewer's cache.
             if (built && view.parent != null) removeView(view)
-            scratch?.recycle()
-            scratch = null
-            pixels = null
         }
+    }
+
+    /** Frees the shared scratch, which the next capture reallocates. Never while an upload reads it. */
+    private fun dropScratch() {
+        if (uploading) return
+        scratch?.recycle()
+        scratch = null
+        pixels = null
+    }
+
+    /**
+     * The shared bitmap sized to [size], reused while its allocation fits: chrome pages differ in size (a
+     * transition page wraps its content), and reallocating per turn would churn the heap it is there to spare.
+     */
+    private fun scratchBitmap(size: IntSize): Bitmap {
+        // ARGB_8888 is RGBA byte order, matching RGBA8Unorm. Sides are capped by maxCaptureSide, so this fits an Int.
+        val bytes = size.width * size.height * Int.SIZE_BYTES
+        val existing = scratch
+        if (existing != null && !existing.isRecycled && existing.allocationByteCount >= bytes &&
+            (pixels?.capacity() ?: 0) >= bytes
+        ) {
+            if (existing.width != size.width || existing.height != size.height) {
+                existing.reconfigure(size.width, size.height, Bitmap.Config.ARGB_8888)
+            }
+            return existing
+        }
+        existing?.recycle()
+        // Dropped first so a throw below can't leave [scratch] pointing at the recycled bitmap.
+        scratch = null
+        pixels = null
+        // The upload needs a direct native-order buffer: its JNI binding reads a raw pointer.
+        val bitmap = Bitmap.createBitmap(size.width, size.height, Bitmap.Config.ARGB_8888)
+        pixels = ByteBuffer.allocateDirect(bytes).order(ByteOrder.nativeOrder())
+        return bitmap.also { scratch = it }
     }
 
     /** The activity behind this view's context, which is every owner a composition asks for. */
@@ -949,9 +898,6 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
 
         /** [Mipmap]'s drawable tile size: the snapshot is a single texture no larger. */
         const val MAX_CAPTURE_SIDE = 4096
-
-        /** A capture's scratch: the ARGB bitmap drawn into and the buffer uploaded from. */
-        const val CAPTURE_BYTES_PER_PIXEL = 8L
 
         const val MAX_FAILURES = 3
 
@@ -1044,37 +990,3 @@ internal fun ImagePage.collectComposePages(
 /** How wide a composition lays out in a viewport [viewportWidth] wide: all of it, or [spread]'s side of it. */
 internal fun composedSlotWidth(spread: ImagePage.ImageSpread?, viewportWidth: Int): Int =
     spread?.composedSideWidth(viewportWidth) ?: viewportWidth
-
-/** What a Compose page's capture needs from the budget this pass. */
-internal data class CaptureNeed(val onScreen: Boolean, val captured: Boolean, val distance: Int, val bytes: Long)
-
-internal data class CaptureClaim<T>(val page: T, val need: CaptureNeed)
-
-/**
- * The order claims share the budget in: on screen first, where a missing or stale capture shows; then a page
- * with no capture before a fresh one, since it draws nothing once it moves; then nearest the current page.
- */
-internal val captureClaimOrder: Comparator<CaptureNeed> =
-    compareBy<CaptureNeed>({ !it.onScreen }, { it.captured }, { it.distance })
-
-/** Which [claims] fit [budgetBytes] between them, in [captureClaimOrder]; the first always does. */
-internal fun <T> withinCaptureBudget(claims: List<CaptureClaim<T>>, budgetBytes: Long): Set<T> {
-    val within = mutableSetOf<T>()
-    var spent = 0L
-    for (claim in claims.sortedWith(compareBy(captureClaimOrder) { it.need })) {
-        if (within.isNotEmpty() && spent + claim.need.bytes > budgetBytes) break
-        within += claim.page
-        spent += claim.need.bytes
-    }
-    return within
-}
-
-/** Whether a page counts against the budget: it holds scratch, or has a capture to take (off screen, a first). */
-internal fun claimsCaptureScratch(need: CaptureNeed, warmingUp: Boolean, dirty: Boolean, holdsScratch: Boolean) =
-    holdsScratch || !need.captured || warmingUp || (dirty && need.onScreen)
-
-/** Whether an on-screen page with nothing to capture for [idlePasses] passes still keeps its scratch. */
-internal fun keepsIdleScratch(idlePasses: Int) = idlePasses < IDLE_SCRATCH_PASSES
-
-/** Half a second at sixty frames: a page changing more often than that keeps its scratch between captures. */
-internal const val IDLE_SCRATCH_PASSES = 30
