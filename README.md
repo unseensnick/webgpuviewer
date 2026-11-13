@@ -6,8 +6,7 @@ spreads, HDR, tiled rendering of large images and page-turn transitions. This is
 [mpreg-ca/webgpuviewer](https://github.com/mpreg-ca/webgpuviewer), which Reikai's high quality
 manga renderer is built on.
 
-The fork stays a small set of commits on top of an upstream release, and each change is meant to be
-offered upstream. If upstream takes them all, Reikai goes back to upstream's own artifact.
+The fork stays a small set of commits on top of an upstream release.
 
 ## What the fork adds
 
