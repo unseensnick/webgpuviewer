@@ -146,8 +146,8 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
      */
     private fun captureInTurn(chained: Boolean) {
         // Per page, so one throwing (e.g. device lost) costs only its own frame. [renderers] isn't modified here.
+        // Every page even while the scratch is busy: a pass is also where a page attaches and takes its size.
         for (renderer in renderers.values.sortedWith(captureTurns)) {
-            if (uploading) return
             try {
                 renderer.captureIfDirty(chained)
             } catch (e: Throwable) {

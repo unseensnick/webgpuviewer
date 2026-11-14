@@ -23,7 +23,6 @@ import java.util.IdentityHashMap
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.round
 
 class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
@@ -74,10 +73,10 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
             invalidate()
         }
 
-    /** Lowest [scale] a gesture may settle at, never above [homeScale]: fully zoomed out is the floor's lowest. */
+    /** Lowest [scale] a gesture may settle at - see [homeScale]. */
     var minScale = 0f
         get() {
-            if (field > 0) return min(field, homeScale)
+            if (field > 0) return field
             return homeScale
         }
 

@@ -3,6 +3,21 @@
 What each release of this fork adds on top of the upstream release it is built on. Upstream's own
 changes are in [mpreg-ca/webgpuviewer](https://github.com/mpreg-ca/webgpuviewer).
 
+## [Unreleased]
+
+### Fixed
+
+- **A Compose page no longer waits to attach while another page's capture is uploading.** 58.1.4's
+  capture pass stopped at the first page that took the shared scratch, so while a page kept changing,
+  pages behind it in turn could not attach or take their size. Every pass now visits every page; only
+  the upload waits its turn.
+
+### Removed
+
+- **58.1.2's zoom-out floor that followed a lower home zoom is gone.** `minScale` is upstream's again: a
+  gesture settles no lower than it, so a home zoom below it holds only until the first touch. Reikai
+  no longer offers a home zoom below the floor, so nothing used it.
+
 ## [58.1.4] - 2026-11-14
 
 Built on upstream 58.

@@ -79,20 +79,6 @@ class ContinuousViewportTest {
     }
 
     @Test
-    fun aGestureCanSettleAtAHomeScaleBelowTheZoomOutFloor() {
-        state.minScale = 0.1f
-        state.homeScale = 0.01f
-        assertEquals(0.01f, state.minScale)
-    }
-
-    @Test
-    fun aHomeScaleAboveTheZoomOutFloorKeepsTheFloor() {
-        state.minScale = 0.1f
-        state.homeScale = 1f
-        assertEquals(0.1f, state.minScale)
-    }
-
-    @Test
     fun aScrollWithNoGestureIsReported() {
         frame()
         val before = reports
