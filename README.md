@@ -10,7 +10,7 @@ The fork stays a small set of commits on top of an upstream release.
 
 ## What the fork adds
 
-On top of upstream 58, as release `58.1.3` (details in [CHANGELOG.md](CHANGELOG.md)):
+On top of upstream 58, as release `58.1.4` (details in [CHANGELOG.md](CHANGELOG.md)):
 
 - **Space between a spread's two pages**, as a share of one page's width. The spread uses spare
   screen width before its pages shrink, and a single page or a wide page beside a spread keeps the
