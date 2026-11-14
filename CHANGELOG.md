@@ -3,6 +3,17 @@
 What each release of this fork adds on top of the upstream release it is built on. Upstream's own
 changes are in [mpreg-ca/webgpuviewer](https://github.com/mpreg-ca/webgpuviewer).
 
+## [58.1.4] - 2026-11-14
+
+Built on upstream 58.
+
+### Changed
+
+- **Compose pages that keep changing refresh about four times as often.** With one shared capture
+  scratch, the next waiting page now captures as soon as the last upload finishes instead of on the
+  next frame, so a loading spinner on a zoomed-out strip redraws every 80 to 100 ms rather than
+  every 400. A page still in its warmup keeps capturing once a frame.
+
 ## [58.1.3] - 2026-11-13
 
 Built on upstream 58.

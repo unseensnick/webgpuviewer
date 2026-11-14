@@ -135,15 +135,25 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
             reconcile()
         }
         placePages()
+        captureInTurn(chained = false)
+        pump()
+    }
+
+    /**
+     * Gives the scratch to the pages in [captureTurns] order. [chained] runs as the last upload finishes rather than
+     * on a frame, so changing pages refresh at the upload's pace instead of one a frame; it skips a page still in
+     * its warmup, whose captures must span frames for its composition to land.
+     */
+    private fun captureInTurn(chained: Boolean) {
         // Per page, so one throwing (e.g. device lost) costs only its own frame. [renderers] isn't modified here.
         for (renderer in renderers.values.sortedWith(captureTurns)) {
+            if (uploading) return
             try {
-                renderer.captureIfDirty()
+                renderer.captureIfDirty(chained)
             } catch (e: Throwable) {
                 renderer.failed(e)
             }
         }
-        pump()
     }
 
     fun bind(
@@ -616,7 +626,7 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
         }
 
         /** Draws and uploads the composition if anything changed since the last frame. */
-        fun captureIfDirty() {
+        fun captureIfDirty(chained: Boolean) {
             if (released || page.destroyed) return
             // The renderer singleton frees every texture when its surface goes; capturing after that
             // segfaults the render thread rather than throwing.
@@ -655,6 +665,7 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
             if (!page.isOnScreen && page.hasSnapshot && warmup == 0) return
             // The shared scratch is busy; this page keeps its turn, warmup and dirty flag for a later pass.
             if (uploading) return
+            if (chained && warmup > 0) return
 
             if (warmup > 0) {
                 warmup--
@@ -781,6 +792,7 @@ internal class ComposePageHost(context: Context) : FrameLayout(context) {
             }.invokeOnCompletion {
                 // Not in a finally: a launch on a cancelled scope never runs its body, leaving the flag set.
                 uploading = false
+                post { captureInTurn(chained = true) }
             }
         }
 
