@@ -10,13 +10,15 @@ The fork stays a small set of commits on top of an upstream release.
 
 ## What the fork adds
 
-On top of upstream 58, as release `58.1.2` (details in [CHANGELOG.md](CHANGELOG.md)):
+On top of upstream 58, as release `58.1.3` (details in [CHANGELOG.md](CHANGELOG.md)):
 
 - **Space between a spread's two pages**, as a share of one page's width. The spread uses spare
   screen width before its pages shrink, and a single page or a wide page beside a spread keeps the
   spread pages' height.
-- **A viewport report on any scroll.** The continuous viewer calls `onViewport` whenever its
-  position, zoom or read-through page changed, so a programmatic scroll is reported like a fling.
+- **A viewport report on any scroll, never on a landing.** The continuous viewer calls `onViewport`
+  whenever its position, zoom or read-through page changed, so a programmatic scroll is reported like
+  a fling, while nothing is reported from an open, a jump or a restore until the strip is scrolled. A
+  landed page reads nothing above it until a scroll crosses a page edge.
 - **`ImageViewerState.pageAt`**, the page under a point: a spread's side, nothing in the gap, or
   the page shown whole, also mid-turn and on the continuous strip.
 - **One shared capture scratch for Compose pages**, so a strip of loading or error pages holds one

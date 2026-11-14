@@ -3,6 +3,23 @@
 What each release of this fork adds on top of the upstream release it is built on. Upstream's own
 changes are in [mpreg-ca/webgpuviewer](https://github.com/mpreg-ca/webgpuviewer).
 
+## [58.1.3] - 2026-11-13
+
+Built on upstream 58.
+
+### Fixed
+
+- **A continuous viewer no longer reports a landing as reading.** After an open, a jump
+  (`resetScroll`), a restore (`restorePosition`), a slide-in (`animateSlideIn`) or a home zoom set by
+  code (`homeScale`), `onViewport` stays silent until the next `scrollBy`, and a page the landing
+  showed whole does not read through until the next placement. So neither pages decoding around the
+  landed one nor the first touch after it change what an app saves. 58.1.0 reported every moved
+  frame, and an app saving progress from it moved the saved page on every reopen, back one at a time
+  or, zoomed out, forward several.
+- **After a landing, the page above page 0 no longer reads through until a scroll crosses a page
+  edge.** Upstream's fallback counted it whenever nothing on screen had been read past, so the first
+  touch after a jump or a reopen reported the page before the landed one.
+
 ## [58.1.2] - 2026-11-13
 
 Built on upstream 58.

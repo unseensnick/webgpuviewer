@@ -18,6 +18,8 @@ import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer
 import ca.mpreg.webgpuviewer.renderer.solveImagePlacement
 import ca.mpreg.webgpuviewer.viewer.ImageViewerContinuousState.Companion.MAX_PAGE_WALK
 import ca.mpreg.webgpuviewer.viewer.ImageViewerContinuousState.Companion.MAX_VISIBLE_PAGES
+import java.util.Collections
+import java.util.IdentityHashMap
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.max
@@ -68,6 +70,7 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
             if (clamped == field) return
             field = clamped
             if (scale < clamped) scale = clamped
+            land()
             invalidate()
         }
 
@@ -214,12 +217,14 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
     private var pendingRestore: ContinuousPosition? = null
 
     /**
-     * [readThrough] is the deepest page whose bottom has reached the viewport's; where
-     * [onPageChange] means "reached this page", this means "read past it" - so the document's
-     * last page reads through exactly when its bottom comes on screen. Reported at most once a frame: for
-     * every frame whose viewport moved since the last report, whatever moved it ([scrollBy], an animation,
-     * a jump, a zoom, a decode that changes [readThrough]), and every frame of a fling or pan. Not for a frame
-     * that only redrew. Observation only - it never moves the scroll.
+     * [readThrough] is the deepest page whose bottom has reached the viewport's, else the page above page 0
+     * once a scroll has crossed a page edge; where [onPageChange] means "reached this page", this means "read
+     * past it" - so the document's last page reads through exactly when its bottom comes on screen. A landing
+     * is not reading: from a placement ([resetScroll], [restorePosition], [animateSlideIn], [homeScale], the
+     * open) to the next [scrollBy] nothing is reported, and until the next placement a page it showed whole,
+     * or the page above, does not read through. Otherwise reported at most once a frame: for every frame the
+     * viewport moved since the last report ([scrollBy], a zoom, a decode that changes [readThrough]), and every
+     * frame of a fling or pan; not for a frame that only redrew. Observation only - it never moves the scroll.
      */
     var onViewport: ((readThrough: ImagePage?) -> Unit)? = null
 
@@ -227,6 +232,22 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
     private var reportedCameraDocY = Float.NaN
     private var reportedScale = Float.NaN
     private var reportedReadThrough: ImagePage? = null
+
+    /** The placement not yet moved by a scroll, numbered by [land], or 0; see [onViewport]. The open is the first. */
+    @Volatile
+    private var landing = 1
+
+    private var placements = 1
+
+    /** Whether the frame [captureLocked] just took is part of a landing. Render thread only. */
+    private var frameLanding = false
+
+    /** Pages whose bottom the landing numbered [shownFor] showed, which it did not read. Render thread only. */
+    private val shownAtLanding: MutableSet<ImagePage> = Collections.newSetFromMap(IdentityHashMap())
+    private var shownFor = 0
+
+    /** A scroll crossed onto page 0 since the last placement, so the page above was read past. Under [scrollLock]. */
+    private var leftPageAbove = false
 
     // Set with [onScreenPages].
     private var marginPages: List<ImagePage> = emptyList()
@@ -257,6 +278,7 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
         synchronized(scrollLock) {
             getPage(0) ?: return
             slideOffset = 0f
+            landing = 0
 
             scrollYInternal += deltaPixels.toDouble()
 
@@ -268,6 +290,7 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
                     break
                 }
                 if (!isRestoring) onPageChange?.runCatching { invoke(-1) }
+                leftPageAbove = true
                 val newPage = getPage(0) ?: return
                 val newHeight = getPageSlotHeight(newPage)
                 anchorDocYInternal -= newHeight.toDouble()
@@ -294,6 +317,7 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
                     break
                 }
                 if (!isRestoring) onPageChange?.runCatching { invoke(1) }
+                leftPageAbove = true
                 anchorDocYInternal += pageHeight.toDouble()
                 val newPage = getPage(0) ?: return
                 currentPageHeight = getPageSlotHeight(newPage)
@@ -395,12 +419,19 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
     }
 
     /** Move to the top of the page [getPage] now answers 0 with, after the app jumps pages. */
+    /** A placement: nothing is reported until the next [scrollBy], see [onViewport]. */
+    private fun land() {
+        landing = ++placements
+    }
+
     fun resetScroll() {
         synchronized(scrollLock) {
             scrollYInternal = 0.0
             // A different page now: its height is the baseline, not the one left behind.
             currentPageHeight = null
             pendingRestore = null
+            land()
+            leftPageAbove = false
         }
     }
 
@@ -454,6 +485,8 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
             val maxOffsetX = max(0f, (scale - 1f) / (2f * scale))
             offsetX = pos.offsetX.fastCoerceIn(-maxOffsetX, maxOffsetX)
             pendingRestore = null
+            land()
+            leftPageAbove = false
         } finally {
             isRestoring = false
         }
@@ -564,6 +597,7 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
                 // Not if cancelled: this resumes after its replacement set its own.
                 if (animationJob === coroutineContext[Job]) {
                     slideOffset = 0f
+                    land()
                     invalidate()
                 }
             }
@@ -649,11 +683,12 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
 
         val moved = snapshot.cameraDocY != reportedCameraDocY || snapshot.scale != reportedScale ||
             snapshot.readThrough !== reportedReadThrough
+        // A placed frame only moves the baseline, so the next real move reports against where it landed.
         if (moved || isFlinging || isPanning) {
             reportedCameraDocY = snapshot.cameraDocY
             reportedScale = snapshot.scale
             reportedReadThrough = snapshot.readThrough
-            onViewport?.runCatching { invoke(snapshot.readThrough) }
+            if (!frameLanding) onViewport?.runCatching { invoke(snapshot.readThrough) }
         }
         return snapshot
     }
@@ -665,6 +700,13 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
 
         pendingRestore?.let { pending ->
             if (getPage(0) != null) applyRestoreLocked(pending)
+        }
+        // After a restore this frame applies. A slide-in's offset too, which a scroll during it does not end.
+        val placement = landing
+        frameLanding = placement != 0 || slideOffset != 0f
+        if (placement != 0 && placement != shownFor) {
+            shownAtLanding.clear()
+            shownFor = placement
         }
 
         if (page0 != null) {
@@ -710,8 +752,12 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
         // covering the viewport's top is one being read, and matching it would report it over
         // the finished pages below. Against the content, not the slot, or the trailing gap
         // keeps the last page from ever reporting - the end lands its bottom on screenBot.
-        fun isScrolledThrough(top: Float, contentHeight: Float) =
-            contentHeight > 0f && top + contentHeight <= screenBot + 0.5f
+        fun isScrolledThrough(page: ImagePage, top: Float, contentHeight: Float): Boolean {
+            if (contentHeight <= 0f || top + contentHeight > screenBot + 0.5f) return false
+            // Shown whole by the landing, not read, see onViewport.
+            if (frameLanding) shownAtLanding.add(page)
+            return page !in shownAtLanding
+        }
 
         var scrolledThrough: ImagePage? = null
 
@@ -729,7 +775,7 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
             docTopBack -= pageHeight
             yTop -= pageHeight
             // Walking up, so the first match is the deepest one above page 0.
-            if (scrolledThrough == null && isScrolledThrough(yTop, contentHeight)) {
+            if (scrolledThrough == null && isScrolledThrough(page, yTop, contentHeight)) {
                 scrolledThrough = page
             }
             visible.add(page)
@@ -764,7 +810,7 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
             val pageHeight = contentHeight + pageGapPx
 
             // Walking down, so a later match replaces whatever the backward walk found.
-            if (isScrolledThrough(y, contentHeight)) scrolledThrough = page
+            if (isScrolledThrough(page, y, contentHeight)) scrolledThrough = page
 
             if (y + pageHeight > visTop) {
                 visible.add(page)
@@ -785,7 +831,8 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
         pagesBelow = below
         pagesAbove = above
 
-        if (scrolledThrough == null) {
+        // Only once scrolled off it: landed at page 0's top, the page above was never read.
+        if (scrolledThrough == null && leftPageAbove) {
             scrolledThrough = getPage(-1)?.takeIf { getPageHeight(it) > 0f }
         }
 

@@ -34,9 +34,18 @@ class ContinuousViewportTest {
 
     private var reports = 0
 
+    /** What each report read through, in order. */
+    private val readThrough = mutableListOf<ImagePage?>()
+
     init {
-        state.onViewport = { reports++ }
+        state.onViewport = {
+            reports++
+            readThrough.add(it)
+        }
     }
+
+    /** Three screens' worth of pages, so one never reads through while it is page 0. */
+    private val tall = List(8) { ImagePage.Dummy(1000, 6000) }
 
     /** One frame, as the render loop takes it. */
     private fun frame() {
@@ -117,6 +126,7 @@ class ContinuousViewportTest {
 
     @Test
     fun aReloadedPageInPlaceIsReported() {
+        state.scrollBy(100f)
         frame()
         val before = reports
         // The same place in a chapter loaded again: new pages at the same index, nothing moved.
@@ -127,13 +137,219 @@ class ContinuousViewportTest {
     }
 
     @Test
-    fun aJumpIsReported() {
+    fun aPageDecodingAfterALandingIsNotReported() {
         frame()
         val before = reports
+        // As a page below decoding to a new height: what reads through changes, with nothing moved.
+        val decoded = List(8) { ImagePage.Dummy(1000, 400) }
+        state.fetchPage = { decoded.getOrNull(current + it) }
+        frame()
+        assertEquals(before, reports)
+    }
+
+    @Test
+    fun aJumpIsNotReported() {
+        // Moved first, so the strip is no longer landing from the open.
+        state.scrollBy(100f)
+        frame()
+        val before = reports
+        current = 4
+        state.resetScroll()
+        frame()
+        assertEquals(before, reports)
+    }
+
+    @Test
+    fun aScrollAfterAJumpIsReported() {
+        frame()
+        current = 4
+        state.resetScroll()
+        frame()
+        val before = reports
+        state.scrollBy(100f)
+        frame()
+        assertEquals(before + 1, reports)
+    }
+
+    @Test
+    fun aRestoreIsNotReported() {
+        state.scrollBy(300f)
+        frame()
+        val saved = state.savePosition()
+        state.scrollBy(900f)
+        frame()
+        val before = reports
+        state.restorePosition(saved)
+        frame()
+        assertEquals(before, reports)
+    }
+
+    @Test
+    fun aRestoreWaitingForItsPageIsNotReported() {
+        state.scrollBy(300f)
+        frame()
+        val saved = state.savePosition()
+        state.scrollBy(-300f)
+        // As a reopen: the position arrives before its pages do, and is applied by the frame they arrive in.
+        state.fetchPage = { null }
+        state.restorePosition(saved)
+        frame()
+        state.fetchPage = { pages.getOrNull(current + it) }
+        val before = reports
+        frame()
+        assertEquals(before, reports)
+    }
+
+    @Test
+    fun aTouchAfterAJumpDoesNotReadThePageAbove() {
+        state.fetchPage = { tall.getOrNull(current + it) }
+        // Read past a page first, so the page above would count.
+        state.scrollBy(6100f)
+        frame()
         current = 6
         state.resetScroll()
         frame()
-        assertEquals(before + 1, reports)
+        val before = reports
+        state.scrollBy(10f)
+        frame()
+        assertEquals(listOf<ImagePage?>(null), readThrough.drop(before))
+    }
+
+    @Test
+    fun aTouchAfterARestoreDoesNotReadThePageAbove() {
+        state.fetchPage = { tall.getOrNull(current + it) }
+        state.scrollBy(100f)
+        val saved = state.savePosition()
+        state.scrollBy(12000f)
+        frame()
+        state.restorePosition(saved)
+        frame()
+        val before = reports
+        state.scrollBy(10f)
+        frame()
+        assertEquals(listOf<ImagePage?>(null), readThrough.drop(before))
+    }
+
+    @Test
+    fun aScrollPastAPageEdgeReadsThePageAbove() {
+        state.fetchPage = { tall.getOrNull(current + it) }
+        frame()
+        current = 4
+        state.resetScroll()
+        frame()
+        val before = reports
+        state.scrollBy(6100f)
+        frame()
+        assertEquals(listOf<ImagePage?>(tall[4]), readThrough.drop(before))
+    }
+
+    @Test
+    fun aScrollBackPastAPageEdgeReadsThePageAbove() {
+        state.fetchPage = { tall.getOrNull(current + it) }
+        frame()
+        current = 4
+        state.resetScroll()
+        frame()
+        val before = reports
+        // Half way up the page before the landed one, whose bottom is still below the screen.
+        state.scrollBy(-3000f)
+        frame()
+        assertEquals(listOf<ImagePage?>(tall[2]), readThrough.drop(before))
+    }
+
+    @Test
+    fun aTouchAfterALandingDoesNotReadThePagesItShowedWhole() {
+        // Pages 3 and 4 both fit on screen as the strip lands.
+        frame()
+        val before = reports
+        state.scrollBy(10f)
+        frame()
+        assertEquals(listOf<ImagePage?>(null), readThrough.drop(before))
+    }
+
+    @Test
+    fun aPageScrolledOnScreenAfterALandingReadsThrough() {
+        frame()
+        val before = reports
+        // Page 5's bottom comes on screen.
+        state.scrollBy(1000f)
+        frame()
+        assertEquals(listOf<ImagePage?>(pages[5]), readThrough.drop(before))
+    }
+
+    @Test
+    fun aJumpForgetsWhatTheLastLandingShowed() {
+        frame()
+        state.scrollBy(1000f)
+        frame()
+        // Back to page 3, whose bottom the first landing showed: this landing is reading it fresh.
+        current = 1
+        state.resetScroll()
+        frame()
+        val before = reports
+        state.scrollBy(1000f)
+        frame()
+        assertEquals(listOf<ImagePage?>(pages[3]), readThrough.drop(before))
+    }
+
+    @Test
+    fun theFirstFrameIsNotReported() {
+        frame()
+        assertEquals(0, reports)
+    }
+
+    @Test
+    fun theFirstFrameWithPagesIsNotReported() {
+        // A cut-down strip, so the page below the top one reads through on screen.
+        val short = List(8) { ImagePage.Dummy(1000, 500) }
+        state.fetchPage = { null }
+        frame()
+        state.fetchPage = { short.getOrNull(current + it) }
+        frame()
+        assertEquals(0, reports)
+    }
+
+    @Test
+    fun aSlideInIsNotReported() {
+        state.scope = scope
+        // Moved first, so the strip is no longer landing from the open.
+        state.scrollBy(100f)
+        frame()
+        val before = reports
+        state.animateSlideIn(1)
+        clock.frame(0L)
+        frame()
+        clock.frame(16_000_000L)
+        frame()
+        assertEquals(before, reports)
+    }
+
+    @Test
+    fun theFrameASlideInLandsOnIsNotReported() {
+        state.scope = scope
+        state.scrollBy(100f)
+        frame()
+        state.animateSlideIn(1)
+        clock.frame(0L)
+        frame()
+        val before = reports
+        // Long past the spring's settling, so this frame ends it.
+        clock.frame(5_000_000_000L)
+        frame()
+        assertEquals(before, reports)
+    }
+
+    @Test
+    fun aHomeScaleSetByCodeIsNotReported() {
+        state.scale = 0.4f
+        // Moved first, so the strip is no longer landing from the open.
+        state.scrollBy(100f)
+        frame()
+        val before = reports
+        // Lifts the zoom from 0.4 to the new home of 0.8.
+        state.homeScale = 0.8f
+        frame()
+        assertEquals(before, reports)
     }
 
     @Test
