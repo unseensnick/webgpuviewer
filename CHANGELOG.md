@@ -3,7 +3,9 @@
 What each release of this fork adds on top of the upstream release it is built on. Upstream's own
 changes are in [mpreg-ca/webgpuviewer](https://github.com/mpreg-ca/webgpuviewer).
 
-## [Unreleased]
+## [58.1.5] - 2026-11-14
+
+Built on upstream 58.
 
 ### Fixed
 
