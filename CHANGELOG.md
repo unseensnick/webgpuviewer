@@ -3,6 +3,14 @@
 What each release of this fork adds on top of the upstream release it is built on. Upstream's own
 changes are in [mpreg-ca/webgpuviewer](https://github.com/mpreg-ca/webgpuviewer).
 
+## [Unreleased]
+
+### Fixed
+
+- **The continuous strip no longer jumps back or forward when a page just above the reader finishes
+  loading.** A page 0 that changed height kept the same fraction of itself on screen, so with only its
+  bottom edge showing, the page being read moved by the whole change. That page now keeps its place.
+
 ## [58.1.5] - 2026-11-14
 
 Built on upstream 58.

@@ -78,6 +78,28 @@ class ContinuousViewportTest {
         scope.cancel()
     }
 
+    /** Reading the page below a page 0 that decodes taller just above it, as one does scrolling a strip online. */
+    @Test
+    fun aPageDecodingAboveTheReaderKeepsThePageBelowInPlace() {
+        val strip = mutableListOf<ImagePage>(
+            ImagePage.Dummy(1000, 2000),
+            ImagePage.Dummy(1000, 1000),
+            ImagePage.Dummy(1000, 1000),
+        )
+        var at = 0
+        state.fetchPage = { strip.getOrNull(at + it) }
+        state.onPageChange = { at += it }
+        frame()
+        // Page 0 shows only its last 200 px at the top; the reader is on the page below it.
+        state.scrollBy(1800f)
+        frame()
+
+        strip[0] = ImagePage.Dummy(1000, 6000)
+        frame()
+
+        assertEquals(5800f, state.scrollY, 0.5f)
+    }
+
     @Test
     fun aScrollWithNoGestureIsReported() {
         frame()

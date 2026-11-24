@@ -712,11 +712,18 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
             val pageHeight = getPageSlotHeight(page0)
             // A decode correcting a placeholder's height holds the same fraction of the page.
             // Both heights must be measured - an unmeasured one is no baseline.
-            val ratio = currentPageHeight
-                ?.takeIf { it > 0f && pageHeight > 0f && pageHeight != it }
-                ?.let { (pageHeight / it).toDouble() }
-            val wasPinned = ratio != null && maxScrollY()?.let { scrollYInternal >= it } == true
-            if (ratio != null) scrollYInternal *= ratio
+            val oldHeight = currentPageHeight?.takeIf { it > 0f && pageHeight > 0f && pageHeight != it }
+            val wasPinned = oldHeight != null && maxScrollY()?.let { scrollYInternal >= it } == true
+            if (oldHeight != null) {
+                // A page 0 mostly scrolled past is not what is being read, the page below it is, so that
+                // one keeps its place. Holding page 0's fraction moved it by the whole change instead, a jerk
+                // back or forward whenever a page decoded just above the reader while they scrolled.
+                if (oldHeight - scrollYInternal < 0.5 * screenH / safeScale) {
+                    scrollYInternal += pageHeight - oldHeight
+                } else {
+                    scrollYInternal *= (pageHeight / oldHeight).toDouble()
+                }
+            }
             if (pageHeight > 0f) currentPageHeight = pageHeight
             // A decode can shorten the document under a position already at its end.
             clampToDocumentEnd()
