@@ -23,6 +23,9 @@ On top of upstream 58, as release `58.1.6` (details in [CHANGELOG.md](CHANGELOG.
   the page shown whole, also mid-turn and on the continuous strip.
 - **One shared capture scratch for Compose pages**, so a strip of loading or error pages holds one
   page's capture memory instead of one per page in reach, which ran the Java heap out.
+- **The page being read keeps its place when the page above it resizes.** A page that has mostly
+  scrolled off the top and then finishes loading no longer moves the page below it on the continuous
+  strip.
 
 ## Branches and releases
 
